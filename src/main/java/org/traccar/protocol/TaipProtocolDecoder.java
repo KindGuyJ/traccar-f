@@ -26,10 +26,13 @@ import org.traccar.helper.DateBuilder;
 import org.traccar.helper.DateUtil;
 import org.traccar.helper.Parser;
 import org.traccar.helper.PatternBuilder;
+import org.traccar.helper.UnitsConverter;
 import org.traccar.model.Position;
 
 import java.net.SocketAddress;
+import java.util.ArrayList;
 import java.util.Date;
+import java.util.List;
 import java.util.Locale;
 import java.util.regex.Pattern;
 
@@ -112,6 +115,30 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
             .any()
             .compile();
 
+    private static final Pattern PATTERN_RINHO = new PatternBuilder()
+            .expression("R(CQ|EQ|ER)")           // type
+            .number("(xx)")                      // report id
+            .number("(dd)(dd)(dd)")              // date (ddmmyy)
+            .number("(dd)(dd)(dd)")              // time (hhmmss)
+            .number("([-+]dd)(d{5})")            // latitude
+            .number("([-+]ddd)(d{5})")           // longitude
+            .number("(ddd)")                     // speed (km/h)
+            .number("(ddd)")                     // course
+            .number("(xx)")                      // input
+            .number("(xx)")                      // output
+            .number("(ddd)")                     // power
+            .number("(x{8})")                    // odometer
+            .number("([01])")                    // gps power
+            .number("(d)")                       // fix mode
+            .number("(dd)")                      // pdop
+            .number("(dd)")                      // satellites
+            .number("(xxxx)")                    // data age
+            .number("[01]")                      // modem power
+            .number("d")                         // gsm status
+            .number("(dd)")                      // rssi
+            .any()
+            .compile();
+
     private Date getTime(long week, long day, long seconds) {
         DateBuilder dateBuilder = new DateBuilder()
                 .setDate(1980, 1, 6)
@@ -169,6 +196,11 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
         int beginIndex = sentence.indexOf('>');
         if (beginIndex != -1) {
             sentence = sentence.substring(beginIndex + 1);
+        }
+
+        Parser rinhoParser = new Parser(PATTERN_RINHO, sentence);
+        if (rinhoParser.matches()) {
+            return decodeRinho(channel, remoteAddress, sentence, rinhoParser);
         }
 
         Parser parser = new Parser(PATTERN, sentence);
@@ -330,21 +362,125 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
             }
         }
 
-        String[] attributes = null;
-        int beginAttributes = sentence.indexOf(';');
-        if (beginAttributes != -1) {
-            int endIndex = sentence.indexOf('<', beginAttributes);
-            if (endIndex == -1) {
-                endIndex = sentence.length();
-            }
-            attributes = sentence.substring(beginAttributes, endIndex).split(";");
-        }
-
-        Position result = decodeAttributes(channel, remoteAddress, position, attributes);
+        Position result = decodeAttributes(channel, remoteAddress, position, splitAttributes(sentence));
         if (result != null && !located) {
             getLastLocation(result, result.getDeviceTime());
         }
         return result;
+    }
+
+    private String[] splitAttributes(String sentence) {
+        int beginAttributes = sentence.indexOf(';');
+        if (beginAttributes == -1) {
+            return null;
+        }
+        int endIndex = sentence.indexOf('<', beginAttributes);
+        if (endIndex == -1) {
+            endIndex = sentence.length();
+        }
+        return sentence.substring(beginAttributes, endIndex).split(";");
+    }
+
+    private Position decodeRinho(Channel channel, SocketAddress remoteAddress, String sentence, Parser parser) {
+
+        Position position = new Position(getProtocolName());
+
+        String type = parser.next();
+        position.set(Position.KEY_EVENT, parser.nextHexInt());
+
+        int day = parser.nextInt();
+        int month = parser.nextInt();
+        int year = parser.nextInt();
+        DateBuilder dateBuilder = new DateBuilder()
+                .setDate(year, month, day)
+                .setTime(parser.nextInt(), parser.nextInt(), parser.nextInt());
+
+        double latitude = parser.nextCoordinate(Parser.CoordinateFormat.DEG_DEG);
+        double longitude = parser.nextCoordinate(Parser.CoordinateFormat.DEG_DEG);
+
+        position.setSpeed(UnitsConverter.knotsFromKph(parser.nextInt()));
+        position.setCourse(parser.nextInt());
+
+        int input = parser.nextHexInt();
+        position.set(Position.KEY_IGNITION, BitUtil.check(input, 7));
+        position.set(Position.KEY_INPUT, input);
+        position.set(Position.KEY_OUTPUT, parser.nextHexInt());
+        position.set(Position.KEY_POWER, parser.nextInt() / 10.0);
+        position.set(Position.KEY_ODOMETER, parser.nextLong(16, 0));
+
+        boolean gpsPower = parser.nextInt() == 1;
+        int fixMode = parser.nextInt();
+        position.set(Position.KEY_PDOP, parser.nextInt());
+        position.set(Position.KEY_SATELLITES, parser.nextInt());
+        position.set("dataAge", parser.nextHexInt());
+        position.set(Position.KEY_RSSI, parser.nextInt());
+
+        // reports without fix carry zero date and coordinates
+        boolean located = day != 0;
+        if (located) {
+            position.setTime(dateBuilder.getDate());
+            position.setLatitude(latitude);
+            position.setLongitude(longitude);
+            position.setValid(gpsPower && fixMode >= 2);
+        } else {
+            position.setTime(new Date());
+        }
+
+        List<String> attributes = new ArrayList<>();
+        String[] segments = splitAttributes(sentence);
+        if (segments != null) {
+            for (String segment : segments) {
+                if (!type.equals("CQ") && segment.matches("[0-9A-F]+[=!].*")) {
+                    decodeCan(position, type, segment);
+                } else {
+                    attributes.add(segment);
+                }
+            }
+        }
+
+        Position result = decodeAttributes(channel, remoteAddress, position, attributes.toArray(new String[0]));
+        if (result != null && !located) {
+            getLastLocation(result, null);
+        }
+        return result;
+    }
+
+    private void decodeCan(Position position, String type, String segment) {
+        for (String pair : segment.split(",")) {
+            int index = pair.indexOf('=');
+            if (index <= 0 || index == pair.length() - 1) {
+                continue; // "CODE!error" or empty value means the ECU did not provide it
+            }
+            String code = pair.substring(0, index);
+            String value = pair.substring(index + 1);
+            if (type.equals("ER")) {
+                switch (code) {
+                    case "2010" -> position.set(Position.KEY_RPM, (int) Double.parseDouble(value));
+                    case "5000" -> position.set(Position.KEY_THROTTLE, Double.parseDouble(value));
+                    case "1030" -> position.set(Position.KEY_FUEL_USED, Double.parseDouble(value));
+                    case "4201" -> position.set(Position.KEY_FUEL_LEVEL, Double.parseDouble(value));
+                    case "1020" -> position.set(Position.KEY_OBD_ODOMETER, (long) (Double.parseDouble(value) * 1000));
+                    case "1010" -> position.set(Position.KEY_OBD_SPEED, Double.parseDouble(value));
+                    case "2012" -> position.set(Position.KEY_COOLANT_TEMP, Double.parseDouble(value));
+                    case "2013" -> position.set("oilPressure", Double.parseDouble(value));
+                    case "2020" -> position.set(Position.KEY_HOURS, (long) (Double.parseDouble(value) * 3600000));
+                    case "3010" -> position.set("tripFuel", Double.parseDouble(value));
+                    default -> position.set("can" + code, value);
+                }
+            } else {
+                switch (code) {
+                    case "1" -> position.set(Position.KEY_VIN, value);
+                    case "2" -> position.set(Position.KEY_RPM, Integer.parseInt(value));
+                    case "3" -> position.set(Position.KEY_OBD_SPEED, Integer.parseInt(value));
+                    case "B" -> position.set(Position.KEY_OBD_ODOMETER, Long.parseLong(value) * 1000);
+                    case "14" -> position.set(Position.KEY_FUEL_USED, Integer.parseInt(value));
+                    case "15" -> position.set(Position.KEY_FUEL_LEVEL, Integer.parseInt(value));
+                    case "2A" -> position.set(Position.KEY_COOLANT_TEMP, Integer.parseInt(value));
+                    case "2C" -> position.set("oilPressure", Integer.parseInt(value));
+                    default -> position.set("can" + code, value);
+                }
+            }
+        }
     }
 
     private Position decodeAttributes(

@@ -12,6 +12,53 @@ public class TaipProtocolDecoderTest extends ProtocolTest {
         var decoder = inject(new TaipProtocolDecoder(null));
 
         verifyDecode(decoder, text(
+                ">RER00251026194446-2764323-06241282000288FF001290000006B13000900001523;2010=0.00,5000=31.00,1030!3,4201!3,1020=111457.00,1010=0.00,2012=72.00,2013!3,2020!3,3010!3;#00C1;ID=860693088278438;*58<"),
+                position()
+                        .location("2026-10-25T19:44:46.000Z", true, -27.64323, -62.41282)
+                        .attribute(Position.KEY_RPM, 0)
+                        .attribute(Position.KEY_THROTTLE, 31.0)
+                        .attribute(Position.KEY_OBD_ODOMETER, 111457000L)
+                        .attribute(Position.KEY_COOLANT_TEMP, 72.0)
+                        .attribute(Position.KEY_FUEL_LEVEL, null)
+                        .attribute(Position.KEY_POWER, 12.9)
+                        .attribute(Position.KEY_IGNITION, true)
+                        .attribute(Position.KEY_SATELLITES, 9));
+
+        verifyDecode(decoder, text(
+                ">RER03251026185338-2764320-06241276000000FF001260000000013000700001099;2010!3,5000!3,1030!3,4201!3,1020!3,1010!3,2012!3,2013!3,2020!3,3010!3;#004C;ID=860693088278438;*2A<"),
+                position()
+                        .attribute(Position.KEY_RPM, null)
+                        .attribute(Position.KEY_EVENT, 3));
+
+        verifyDecode(decoder, text(
+                ">RER26000000000000-0000000-000000000000007F0012600000000115000FFFF1512;2010!3,5000!3,1030!3,4201!3,1020!3,1010!3,2012!3,2013!3,2020!3,3010!3;#1D97;ID=860693088279170;*5C<"),
+                position()
+                        .attribute(Position.KEY_IGNITION, false)
+                        .attribute(Position.KEY_EVENT, 0x26));
+
+        verifyDecode(decoder, text(
+                ">REQ00210918170359-2778100-064258570001517F000000000049D13010900001516;1=1M8GDM9A_KP042788,2=2200,3=45,B=66010,14=30000,15=75,2A=90,2C=340;ID=037883;*01<"),
+                position()
+                        .attribute(Position.KEY_VIN, "1M8GDM9A_KP042788")
+                        .attribute(Position.KEY_RPM, 2200)
+                        .attribute(Position.KEY_OBD_ODOMETER, 66010000L)
+                        .attribute(Position.KEY_COOLANT_TEMP, 90));
+
+        verifyDecode(decoder, text(
+                ">REQ00000000000000-2780656-064296830000117F00000010836F1130112FFFF1117;1=,2=,3=,B=,14=,15=,2A=,2C=;ID=2326;*01<"),
+                position()
+                        .attribute(Position.KEY_RPM, null));
+
+        verifyDecode(decoder, text(
+                ">RCQ00211026183308-3148587-064241260003437F00000000000C413010800000099;#96BA;ID=860693088280376;*41<"),
+                position()
+                        .location("2026-10-21T18:33:08.000Z", true, -31.48587, -64.24126)
+                        .attribute(Position.KEY_IGNITION, false)
+                        .attribute(Position.KEY_INPUT, 0x7F)
+                        .attribute(Position.KEY_ODOMETER, 196L)
+                        .attribute(Position.KEY_SATELLITES, 8));
+
+        verifyDecode(decoder, text(
                 ">RAL19500+00230+00012;ID=3168;*48<"));
 
         verifyDecode(decoder, text(
