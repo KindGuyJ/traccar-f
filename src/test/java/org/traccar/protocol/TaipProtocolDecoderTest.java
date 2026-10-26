@@ -4,7 +4,23 @@ import org.junit.jupiter.api.Test;
 import org.traccar.ProtocolTest;
 import org.traccar.model.Position;
 
+import static org.junit.jupiter.api.Assertions.assertNull;
+import static org.mockito.ArgumentMatchers.eq;
+import static org.mockito.ArgumentMatchers.isNull;
+import static org.mockito.Mockito.spy;
+import static org.mockito.Mockito.verify;
+
 public class TaipProtocolDecoderTest extends ProtocolTest {
+
+    @Test
+    public void testDecodeKeepAlive() throws Exception {
+
+        var decoder = spy(inject(new TaipProtocolDecoder(null)));
+
+        assertNull(decoder.decode(null, null, ">KA;#1F1D;ID=860693088279170;*0C<"));
+        verify(decoder).getDeviceSession(isNull(), isNull(), eq("860693088279170"));
+
+    }
 
     @Test
     public void testDecode() throws Exception {

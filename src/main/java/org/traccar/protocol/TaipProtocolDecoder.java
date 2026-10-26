@@ -198,6 +198,16 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
             sentence = sentence.substring(beginIndex + 1);
         }
 
+        if (sentence.startsWith("KA;")) {
+            // keep-alive carries no position and no ACK, but identifies the device on new connections
+            for (String attribute : splitAttributes(sentence)) {
+                if (attribute.startsWith("ID=")) {
+                    getDeviceSession(channel, remoteAddress, attribute.substring(3));
+                }
+            }
+            return null;
+        }
+
         Parser rinhoParser = new Parser(PATTERN_RINHO, sentence);
         if (rinhoParser.matches()) {
             return decodeRinho(channel, remoteAddress, sentence, rinhoParser);
