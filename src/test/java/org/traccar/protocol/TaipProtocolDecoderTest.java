@@ -23,6 +23,27 @@ public class TaipProtocolDecoderTest extends ProtocolTest {
     }
 
     @Test
+    public void testDecodeResponse() throws Exception {
+
+        var decoder = inject(new TaipProtocolDecoder(null));
+
+        verifyDecode(decoder, text(
+                ">RTD01E0060000000;ID=860693088278438;*14<"),
+                position(Checks.ATTRIBUTES).attribute(Position.KEY_RESULT, "RTD01E0060000000"));
+
+        verifyDecode(decoder, text(
+                ">RRL12E;TRG=JMD+;ACC={GER29H};ID=860693088278438;*63<"),
+                position(Checks.ATTRIBUTES).attribute(Position.KEY_RESULT, "RRL12E;TRG=JMD+;ACC={GER29H}"));
+
+        verifyDecode(decoder, text(
+                ">GOK;ID=860693088278438;*57<"),
+                position(Checks.ATTRIBUTES).attribute(Position.KEY_RESULT, "GOK"));
+
+        assertNull(decoder.decode(null, null, ">GOK<"));
+
+    }
+
+    @Test
     public void testDecode() throws Exception {
 
         var decoder = inject(new TaipProtocolDecoder(null));

@@ -34,6 +34,7 @@ import java.util.ArrayList;
 import java.util.Date;
 import java.util.List;
 import java.util.Locale;
+import java.util.Set;
 import java.util.regex.Pattern;
 
 public class TaipProtocolDecoder extends BaseProtocolDecoder {
@@ -41,6 +42,8 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
     public TaipProtocolDecoder(Protocol protocol) {
         super(protocol);
     }
+
+    private static final Set<String> IGNORED_MESSAGES = Set.of("RAL", "RCP", "RLN", "RTT");
 
     private static final Pattern PATTERN = new PatternBuilder()
             .groupBegin()
@@ -215,7 +218,7 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
 
         Parser parser = new Parser(PATTERN, sentence);
         if (!parser.matches()) {
-            return null;
+            return decodeResponse(channel, remoteAddress, sentence);
         }
 
         boolean isAkroz = sentence.startsWith("RUV");
@@ -389,6 +392,40 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
             endIndex = sentence.length();
         }
         return sentence.substring(beginAttributes, endIndex).split(";");
+    }
+
+    private Position decodeResponse(Channel channel, SocketAddress remoteAddress, String sentence) {
+
+        // anything else carrying an ID is a reply to a command (RRL..., RTD..., RVR..., GOK),
+        // except standard TAIP data messages this decoder does not parse
+        if (IGNORED_MESSAGES.contains(sentence.substring(0, Math.min(3, sentence.length())))) {
+            return null;
+        }
+
+        int endIndex = sentence.indexOf('<');
+        String[] values = (endIndex == -1 ? sentence : sentence.substring(0, endIndex)).split(";");
+
+        DeviceSession deviceSession = null;
+        StringBuilder body = new StringBuilder();
+        for (String value : values) {
+            if (value.startsWith("ID=")) {
+                deviceSession = getDeviceSession(channel, remoteAddress, value.substring(3));
+            } else if (!value.startsWith("#") && !value.startsWith("*")) {
+                if (!body.isEmpty()) {
+                    body.append(';');
+                }
+                body.append(value);
+            }
+        }
+        if (deviceSession == null || body.isEmpty()) {
+            return null;
+        }
+
+        Position position = new Position(getProtocolName());
+        position.setDeviceId(deviceSession.getDeviceId());
+        getLastLocation(position, null);
+        position.set(Position.KEY_RESULT, body.toString());
+        return position;
     }
 
     private Position decodeRinho(Channel channel, SocketAddress remoteAddress, String sentence, Parser parser) {
