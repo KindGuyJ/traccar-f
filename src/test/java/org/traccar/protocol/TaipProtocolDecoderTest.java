@@ -2,6 +2,7 @@ package org.traccar.protocol;
 
 import org.junit.jupiter.api.Test;
 import org.traccar.ProtocolTest;
+import org.traccar.helper.UnitsConverter;
 import org.traccar.model.Position;
 
 import static org.junit.jupiter.api.Assertions.assertNull;
@@ -23,6 +24,32 @@ public class TaipProtocolDecoderTest extends ProtocolTest {
     }
 
     @Test
+    public void testDecodeRinhoFaults() throws Exception {
+
+        var decoder = inject(new TaipProtocolDecoder(null));
+
+        verifyDecode(decoder, text(
+                ">RDF00020826143512;2;J:00:100:1:4;J:00:1761:1:12;#0100;ID=1234;*00<"),
+                position()
+                        .attribute(Position.KEY_EVENT, 0)
+                        .attribute("dtcCount", 2)
+                        .attribute(Position.KEY_DTCS, "SPN100-FMI1 SPN1761-FMI1"));
+
+        verifyDecode(decoder, text(
+                ">RDF00010926104233;1;O:00:P0301:0:0;#0101;ID=1234;*00<"),
+                position()
+                        .attribute("dtcCount", 1)
+                        .attribute(Position.KEY_DTCS, "P0301"));
+
+        verifyDecode(decoder, text(
+                ">RDF0A020826150233;0;#0102;ID=1234;*00<"),
+                position()
+                        .attribute(Position.KEY_EVENT, 10)
+                        .attribute("dtcCount", 0));
+
+    }
+
+    @Test
     public void testDecodeResponse() throws Exception {
 
         var decoder = inject(new TaipProtocolDecoder(null));
@@ -38,6 +65,10 @@ public class TaipProtocolDecoderTest extends ProtocolTest {
         verifyDecode(decoder, text(
                 ">GOK;ID=860693088278438;*57<"),
                 position(Checks.ATTRIBUTES).attribute(Position.KEY_RESULT, "GOK"));
+
+        verifyDecode(decoder, text(
+                ">RTXHOLA;#0019;ID=1234;*64<"),
+                position(Checks.ATTRIBUTES).attribute(Position.KEY_RESULT, "RTXHOLA"));
 
         assertNull(decoder.decode(null, null, ">GOK<"));
 
@@ -242,6 +273,101 @@ public class TaipProtocolDecoderTest extends ProtocolTest {
         verifyDecode(decoder, text(
                 ">RUV03150,NT003,190826131748-2353539-046680190000009FFDE0006,0,6,50000,500,0,0,50,51515,0,0,0,0,0,0,0,0,0,0,0,0;ID=FWHS;#1A2D;*6D<"),
                 position());
+
+    }
+
+    @Test
+    public void testDecodeRinhoExtended() throws Exception {
+
+        var decoder = inject(new TaipProtocolDecoder(null));
+
+        verifyDecode(decoder, text(
+                ">RCV00291224153045-2778467-0642565804518081011270003A98013041200011015"
+                        + "+235005-052010;#0100;ID=974862;*5E<"),
+                position()
+                        .attribute(Position.KEY_IGNITION, true)
+                        .attribute(Position.KEY_INPUT, 0x81)
+                        .attribute(Position.KEY_POWER, 12.7)
+                        .attribute(Position.KEY_ODOMETER, 240000L)
+                        .attribute(Position.PREFIX_TEMP + 1, 23.5)
+                        .attribute(Position.PREFIX_TEMP + 2, -5.2));
+
+        verifyDecode(decoder, text(
+                ">RBR00130217040848-3462200-05846708000175FF0022900003B3C13010800001118410+24061A;ID=555224;*07<"),
+                position()
+                        .attribute(Position.KEY_BATTERY, 4.1)
+                        .attribute(Position.PREFIX_TEMP + 1, 24.06));
+
+        verifyDecode(decoder, text(
+                ">RCV12270218010247-3471349-058400030002057F001200020A1D013010600001509+0000FF+0000FF;#1DE2;ID=7196;*03<"),
+                position()
+                        .attribute(Position.PREFIX_TEMP + 1, null));
+
+        verifyDecode(decoder, text(
+                ">RHV00291224153045-2778467-0642565804518081011270003A98013041200011015"
+                        + "2100000E10C+23501E-05200A;#0100;ID=974862;*5E<"),
+                position()
+                        .attribute(Position.KEY_BATTERY, 2.1)
+                        .attribute(Position.KEY_HOURS, 57612000L)
+                        .attribute(Position.PREFIX_TEMP + 1, 23.5)
+                        .attribute(Position.PREFIX_TEMP + 2, -5.2));
+
+        verifyDecode(decoder, text(
+                ">RHQ00311225161305-2778104-06425850000348FF00125000000A3030105FFFF1120315000081DF;"
+                        + "PA=c0:1850,c2:72,c4:15230.00,c6:89,c7:420;ID=865413053386354;*44<"),
+                position()
+                        .attribute(Position.KEY_BATTERY, 3.15)
+                        .attribute(Position.KEY_HOURS, 33247000L)
+                        .attribute("c0", 1850)
+                        .attribute("c4", 15230.0));
+
+        verifyDecode(decoder, text(
+                ">RCQ04211026183308-3148587-064241260003437F00000000000C413010800000099;"
+                        + "PA=temp:2:23.5;PA=hum:2:65;PA=mag:1:0;#0001;ID=1234;*00<"),
+                position()
+                        .attribute("temp", 23.5)
+                        .attribute("hum", 65.0)
+                        .attribute("mag", 0));
+
+        verifyDecode(decoder, text(
+                ">RCT00120520143022-2778467-0642565800007799001240000000013020700011015;"
+                        + "0100000012345678;#0100;ID=1234;*3A<"),
+                position()
+                        .attribute(Position.KEY_DRIVER_UNIQUE_ID, "0100000012345678"));
+
+        verifyDecode(decoder, text(
+                ">RCU00291224153045-2778467-0642565804518081011270003A980130412000110151;"
+                        + "01000012AB34CD56;#0100;ID=974862;*5E<"),
+                position()
+                        .attribute("driverSession", true)
+                        .attribute(Position.KEY_DRIVER_UNIQUE_ID, "01000012AB34CD56"));
+
+        verifyDecode(decoder, text(
+                ">RBQ00291224153045-2778467-0642565804518081011270003A98013041200011015420;#0100;ID=974862;*5E<"),
+                position()
+                        .attribute(Position.KEY_BATTERY, 4.2));
+
+        verifyDecode(decoder, text(
+                ">RCP00291224153045-2778467-0642565804518081011270003A98013041200011015;#0100;ID=974862;*5E<"),
+                position()
+                        .attribute(Position.KEY_POWER, 12.7));
+
+        verifyDecode(decoder, text(
+                ">RCW00291224153045-2778467-06425658180045112000130411150000240000081;#0100;ID=974862;*5E<"),
+                position()
+                        .course(180.0)
+                        .speed(UnitsConverter.knotsFromKph(45))
+                        .attribute(Position.KEY_SATELLITES, 12)
+                        .attribute(Position.KEY_PDOP, 41)
+                        .attribute(Position.KEY_RSSI, 50)
+                        .attribute(Position.KEY_ODOMETER, 2400000L)
+                        .attribute(Position.KEY_IGNITION, true));
+
+        verifyDecode(decoder, text(
+                ">RBQ00291224153045-2778467-0642565804518081011270003A98013041200011015X2Z;#0100;ID=974862;*5E<"),
+                position()
+                        .attribute(Position.KEY_POWER, 12.7)
+                        .attribute(Position.KEY_BATTERY, null));
 
     }
 

@@ -119,7 +119,7 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
             .compile();
 
     private static final Pattern PATTERN_RINHO = new PatternBuilder()
-            .expression("R(CQ|EQ|ER)")           // type
+            .expression("R(CP|CQ|CR|CT|CU|CV|BQ|BR|BV|HQ|HR|HV|EQ|ER)") // type
             .number("(xx)")                      // report id
             .number("(dd)(dd)(dd)")              // date (ddmmyy)
             .number("(dd)(dd)(dd)")              // time (hhmmss)
@@ -139,6 +139,29 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
             .number("[01]")                      // modem power
             .number("d")                         // gsm status
             .number("(dd)")                      // rssi
+            .expression("([^;<]*)")              // tail
+            .any()
+            .compile();
+
+    private static final Pattern PATTERN_RINHO_CW = new PatternBuilder()
+            .expression("RCW")                   // type
+            .number("(xx)")                      // report id
+            .number("(dd)(dd)(dd)")              // date (ddmmyy)
+            .number("(dd)(dd)(dd)")              // time (hhmmss)
+            .number("([-+]dd)(d{5})")            // latitude
+            .number("([-+]ddd)(d{5})")           // longitude
+            .number("(ddd)")                     // course
+            .number("(ddd)")                     // speed (km/h)
+            .number("([01])")                    // gps power
+            .number("(dd)")                      // satellites
+            .number("(dddd)")                    // data age
+            .number("(d)")                       // fix mode
+            .number("(ddd)")                     // pdop
+            .number("[01]")                      // modem power
+            .number("d")                         // gsm status
+            .number("(dd)")                      // csq
+            .number("(d{10})")                   // odometer
+            .number("(xx)")                      // input
             .any()
             .compile();
 
@@ -190,6 +213,111 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
         };
     }
 
+    private void sendResponse(
+            Channel channel, SocketAddress remoteAddress, DeviceSession deviceSession,
+            String uniqueId, String messageIndex, boolean indexFirst) {
+        if (channel == null) {
+            return;
+        }
+        if (messageIndex != null) {
+            String response;
+            if (messageIndex.startsWith("#IP")) {
+                response = ">SAK;ID=" + uniqueId + ";" + messageIndex + "<";
+            } else {
+                if (indexFirst) {
+                    response = ">ACK;" + messageIndex + ";ID=" + uniqueId + ";";
+                } else {
+                    response = ">ACK;ID=" + uniqueId + ";" + messageIndex + ";";
+                }
+                String model = getDeviceModel(deviceSession);
+                boolean lantrix = model != null && model.toUpperCase(Locale.ROOT).startsWith("LANTRIX");
+                int checksum = Checksum.xor(lantrix ? response : response + "*");
+                response += String.format("*%02X", checksum) + "<";
+            }
+            channel.writeAndFlush(new NetworkMessage(response, remoteAddress));
+        } else {
+            channel.writeAndFlush(new NetworkMessage(uniqueId, remoteAddress));
+        }
+    }
+
+    private Position decodeFaults(Channel channel, SocketAddress remoteAddress, String sentence) {
+
+        int endIndex = sentence.indexOf('<');
+        String[] values = (endIndex == -1 ? sentence : sentence.substring(0, endIndex)).split(";");
+        if (values.length < 2 || values[0].length() < 13) {
+            return decodeResponse(channel, remoteAddress, sentence);
+        }
+
+        String header = values[0];
+        int event;
+        Date faultTime;
+        try {
+            event = Integer.parseInt(header.substring(3, 5), 16);
+            faultTime = new DateBuilder()
+                    .setDate(
+                            Integer.parseInt(header.substring(9, 11)),
+                            Integer.parseInt(header.substring(7, 9)),
+                            Integer.parseInt(header.substring(5, 7)))
+                    .setTime(
+                            Integer.parseInt(header.substring(11, 13)),
+                            Integer.parseInt(header.substring(13, 15)),
+                            Integer.parseInt(header.substring(15, 17)))
+                    .getDate();
+        } catch (NumberFormatException | StringIndexOutOfBoundsException e) {
+            return decodeResponse(channel, remoteAddress, sentence);
+        }
+
+        Position position = new Position(getProtocolName());
+        position.setTime(faultTime);
+        position.set(Position.KEY_EVENT, event);
+
+        List<String> faults = new ArrayList<>();
+        List<String> attributes = new ArrayList<>();
+        for (int i = 1; i < values.length; i++) {
+            String value = values[i];
+            if (value.startsWith("ID=") || value.startsWith("#")) {
+                attributes.add(value);
+            } else if (i == 1) {
+                try {
+                    position.set("dtcCount", Integer.parseInt(value));
+                } catch (NumberFormatException e) {
+                    // ignore malformed count
+                }
+            } else {
+                String fault = decodeFault(value);
+                if (fault != null) {
+                    faults.add(fault);
+                }
+            }
+        }
+        if (!faults.isEmpty()) {
+            position.set(Position.KEY_DTCS, String.join(" ", faults));
+        }
+
+        Position result = decodeAttributes(
+                channel, remoteAddress, position, attributes.toArray(new String[0]));
+        if (result != null) {
+            getLastLocation(result, faultTime);
+        }
+        return result;
+    }
+
+    private String decodeFault(String value) {
+        String[] parts = value.split(":");
+        if (parts.length < 5) {
+            return null;
+        }
+        String source = parts[0];
+        String code = parts[2];
+        String fmi = parts[3];
+        if (source.equals("O")) {
+            return code;
+        } else if (source.equals("J")) {
+            return "SPN" + code + "-FMI" + fmi;
+        }
+        return null;
+    }
+
     @Override
     protected Object decode(
             Channel channel, SocketAddress remoteAddress, Object msg) throws Exception {
@@ -211,9 +339,18 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
             return null;
         }
 
+        if (sentence.startsWith("RDF")) {
+            return decodeFaults(channel, remoteAddress, sentence);
+        }
+
         Parser rinhoParser = new Parser(PATTERN_RINHO, sentence);
         if (rinhoParser.matches()) {
             return decodeRinho(channel, remoteAddress, sentence, rinhoParser);
+        }
+
+        Parser rinhoCompactParser = new Parser(PATTERN_RINHO_CW, sentence);
+        if (rinhoCompactParser.matches()) {
+            return decodeRinhoCompact(channel, remoteAddress, sentence, rinhoCompactParser);
         }
 
         Parser parser = new Parser(PATTERN, sentence);
@@ -406,11 +543,20 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
         String[] values = (endIndex == -1 ? sentence : sentence.substring(0, endIndex)).split(";");
 
         DeviceSession deviceSession = null;
+        String uniqueId = null;
+        String messageIndex = null;
+        boolean indexFirst = true;
         StringBuilder body = new StringBuilder();
         for (String value : values) {
             if (value.startsWith("ID=")) {
-                deviceSession = getDeviceSession(channel, remoteAddress, value.substring(3));
-            } else if (!value.startsWith("#") && !value.startsWith("*")) {
+                uniqueId = value.substring(3);
+                deviceSession = getDeviceSession(channel, remoteAddress, uniqueId);
+                if (messageIndex == null) {
+                    indexFirst = false;
+                }
+            } else if (value.startsWith("#")) {
+                messageIndex = value;
+            } else if (!value.startsWith("*")) {
                 if (!body.isEmpty()) {
                     body.append(';');
                 }
@@ -419,6 +565,11 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
         }
         if (deviceSession == null || body.isEmpty()) {
             return null;
+        }
+
+        if (messageIndex != null && messageIndex.matches("#[0-9A-F]{4}")
+                && Integer.parseInt(messageIndex.substring(1), 16) < 0x8000) {
+            sendResponse(channel, remoteAddress, deviceSession, uniqueId, messageIndex, indexFirst);
         }
 
         Position position = new Position(getProtocolName());
@@ -462,6 +613,8 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
         position.set("dataAge", parser.nextHexInt());
         position.set(Position.KEY_RSSI, parser.nextInt());
 
+        decodeRinhoTail(position, type, parser.next());
+
         // reports without fix carry zero date and coordinates
         boolean located = day != 0;
         if (located) {
@@ -477,8 +630,157 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
         String[] segments = splitAttributes(sentence);
         if (segments != null) {
             for (String segment : segments) {
-                if (!type.equals("CQ") && segment.matches("[0-9A-F]+[=!].*")) {
+                if (segment.startsWith("PA=")) {
+                    decodeParameters(position, segment.substring(3));
+                } else if ((type.equals("EQ") || type.equals("ER"))
+                        && segment.matches("[0-9A-F]+[=!].*")) {
                     decodeCan(position, type, segment);
+                } else if ((type.equals("CT") || type.equals("CU"))
+                        && segment.matches("[0-9A-F]{16}")) {
+                    position.set(Position.KEY_DRIVER_UNIQUE_ID, segment);
+                } else {
+                    attributes.add(segment);
+                }
+            }
+        }
+
+        Position result = decodeAttributes(channel, remoteAddress, position, attributes.toArray(new String[0]));
+        if (result != null && !located) {
+            getLastLocation(result, null);
+        }
+        return result;
+    }
+
+    private void decodeRinhoTail(Position position, String type, String tail) {
+        if (tail == null) {
+            return;
+        }
+        int index = 0;
+        switch (type) {
+            case "CU" -> {
+                if (tail.length() > index) {
+                    position.set("driverSession", tail.charAt(index) == '1');
+                }
+            }
+            case "CR" -> index = decodeTemperature(position, 1, tail, index);
+            case "CV" -> {
+                index = decodeTemperature(position, 1, tail, index);
+                decodeTemperature(position, 2, tail, index);
+            }
+            case "BQ" -> decodeBattery(position, tail, index);
+            case "BR" -> {
+                index = decodeBattery(position, tail, index);
+                decodeTemperature(position, 1, tail, index);
+            }
+            case "BV" -> {
+                index = decodeBattery(position, tail, index);
+                index = decodeTemperature(position, 1, tail, index);
+                decodeTemperature(position, 2, tail, index);
+            }
+            case "HQ" -> {
+                index = decodeBattery(position, tail, index);
+                decodeHours(position, tail, index);
+            }
+            case "HR" -> {
+                index = decodeBattery(position, tail, index);
+                index = decodeHours(position, tail, index);
+                decodeTemperature(position, 1, tail, index);
+            }
+            case "HV" -> {
+                index = decodeBattery(position, tail, index);
+                index = decodeHours(position, tail, index);
+                index = decodeTemperature(position, 1, tail, index);
+                decodeTemperature(position, 2, tail, index);
+            }
+            default -> {
+            }
+        }
+    }
+
+    private int decodeBattery(Position position, String tail, int index) {
+        if (tail.length() >= index + 3) {
+            String value = tail.substring(index, index + 3);
+            if (value.matches("\\d{3}")) {
+                position.set(Position.KEY_BATTERY, Integer.parseInt(value) / 100.0);
+            }
+        }
+        return index + 3;
+    }
+
+    private int decodeHours(Position position, String tail, int index) {
+        if (tail.length() >= index + 8) {
+            String value = tail.substring(index, index + 8);
+            if (value.matches("[0-9A-Fa-f]{8}")) {
+                position.set(Position.KEY_HOURS, Long.parseLong(value, 16) * 1000);
+            }
+        }
+        return index + 8;
+    }
+
+    private int decodeTemperature(Position position, int number, String tail, int index) {
+        if (tail.length() >= index + 7) {
+            String value = tail.substring(index, index + 5);
+            String age = tail.substring(index + 5, index + 7);
+            if (value.matches("[-+]\\d{4}") && age.matches("[0-9A-Fa-f]{2}") && !age.equalsIgnoreCase("FF")) {
+                double temperature = Integer.parseInt(value.substring(1)) / 100.0;
+                if (value.charAt(0) == '-') {
+                    temperature = -temperature;
+                }
+                position.set(Position.PREFIX_TEMP + number, temperature);
+            }
+        }
+        return index + 7;
+    }
+
+    private Position decodeRinhoCompact(
+            Channel channel, SocketAddress remoteAddress, String sentence, Parser parser) {
+
+        Position position = new Position(getProtocolName());
+
+        position.set(Position.KEY_EVENT, parser.nextHexInt());
+
+        int day = parser.nextInt();
+        int month = parser.nextInt();
+        int year = parser.nextInt();
+        DateBuilder dateBuilder = new DateBuilder()
+                .setDate(year, month, day)
+                .setTime(parser.nextInt(), parser.nextInt(), parser.nextInt());
+
+        double latitude = parser.nextCoordinate(Parser.CoordinateFormat.DEG_DEG);
+        double longitude = parser.nextCoordinate(Parser.CoordinateFormat.DEG_DEG);
+
+        position.setCourse(parser.nextInt());
+        position.setSpeed(UnitsConverter.knotsFromKph(parser.nextInt()));
+
+        boolean gpsPower = parser.nextInt() == 1;
+        position.set(Position.KEY_SATELLITES, parser.nextInt());
+        position.set("dataAge", parser.nextInt());
+        int fixMode = parser.nextInt();
+        position.set(Position.KEY_PDOP, parser.nextInt());
+        position.set(Position.KEY_RSSI, parser.nextInt());
+        position.set(Position.KEY_ODOMETER, parser.nextLong());
+
+        int input = parser.nextHexInt();
+        position.set(Position.KEY_IGNITION, BitUtil.check(input, 7));
+        position.set(Position.KEY_INPUT, input);
+
+        // reports without fix carry zero date and coordinates
+        boolean located = day != 0;
+        if (located) {
+            position.setTime(dateBuilder.getDate());
+            position.setLatitude(latitude);
+            position.setLongitude(longitude);
+            position.setValid(gpsPower && fixMode >= 2);
+        } else {
+            position.setTime(new Date());
+        }
+
+        List<String> attributes = new ArrayList<>();
+        String[] segments = splitAttributes(sentence);
+        if (segments != null) {
+            for (String segment : segments) {
+                if (segment.startsWith("PA=")) {
+                    decodeParameters(position, segment.substring(3));
                 } else {
                     attributes.add(segment);
                 }
@@ -530,6 +832,51 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
         }
     }
 
+    private void decodeParameters(Position position, String value) {
+        for (String pair : value.split(",")) {
+            String[] parts = pair.split(":");
+            String name;
+            String type = null;
+            String raw;
+            if (parts.length == 2) {
+                name = parts[0];
+                raw = parts[1];
+            } else if (parts.length == 3) {
+                name = parts[0];
+                type = parts[1];
+                raw = parts[2];
+            } else {
+                continue;
+            }
+            if (name.isEmpty() || raw.isEmpty()) {
+                continue;
+            }
+            if ("1".equals(type)) {
+                try {
+                    position.set(name, Integer.parseInt(raw));
+                } catch (NumberFormatException e) {
+                    position.set(name, raw);
+                }
+            } else if ("2".equals(type)) {
+                try {
+                    position.set(name, Double.parseDouble(raw));
+                } catch (NumberFormatException e) {
+                    position.set(name, raw);
+                }
+            } else if (raw.matches("[-+]?\\d+")) {
+                try {
+                    position.set(name, Integer.parseInt(raw));
+                } catch (NumberFormatException e) {
+                    position.set(name, Long.parseLong(raw));
+                }
+            } else if (raw.matches("[-+]?\\d+\\.\\d+")) {
+                position.set(name, Double.parseDouble(raw));
+            } else {
+                position.set(name, raw);
+            }
+        }
+    }
+
     private Position decodeAttributes(
             Channel channel, SocketAddress remoteAddress, Position position, String[] attributes) {
 
@@ -575,27 +922,7 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
         }
 
         if (deviceSession != null) {
-            if (channel != null) {
-                if (messageIndex != null) {
-                    String response;
-                    if (messageIndex.startsWith("#IP")) {
-                        response = ">SAK;ID=" + uniqueId + ";" + messageIndex + "<";
-                    } else {
-                        if (indexFirst) {
-                            response = ">ACK;" + messageIndex + ";ID=" + uniqueId + ";";
-                        } else {
-                            response = ">ACK;ID=" + uniqueId + ";" + messageIndex + ";";
-                        }
-                        String model = getDeviceModel(deviceSession);
-                        boolean lantrix = model != null && model.toUpperCase(Locale.ROOT).startsWith("LANTRIX");
-                        int checksum = Checksum.xor(lantrix ? response : response + "*");
-                        response += String.format("*%02X", checksum) + "<";
-                    }
-                    channel.writeAndFlush(new NetworkMessage(response, remoteAddress));
-                } else {
-                    channel.writeAndFlush(new NetworkMessage(uniqueId, remoteAddress));
-                }
-            }
+            sendResponse(channel, remoteAddress, deviceSession, uniqueId, messageIndex, indexFirst);
             return position;
         }
 
