@@ -711,7 +711,10 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
         if (tail.length() >= index + 8) {
             String value = tail.substring(index, index + 8);
             if (value.matches("[0-9A-Fa-f]{8}")) {
-                position.set(Position.KEY_HOURS, Long.parseLong(value, 16) * 1000);
+                long seconds = Long.parseLong(value, 16);
+                if (seconds > 0) { // 0 means the device hourmeter is unused
+                    position.set(Position.KEY_HOURS, seconds * 1000);
+                }
             }
         }
         return index + 8;

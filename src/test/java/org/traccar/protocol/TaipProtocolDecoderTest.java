@@ -322,6 +322,14 @@ public class TaipProtocolDecoderTest extends ProtocolTest {
                         .attribute("c4", 15230.0));
 
         verifyDecode(decoder, text(
+                ">RHQ00051126211440-2750504-061508110000397F00128001121F81300120000150841300000000;"
+                        + "PA=rpm:799,coolantTemp:66;ID=860693088278438;*5A<"),
+                position()
+                        .attribute(Position.KEY_BATTERY, 4.13)
+                        .attribute(Position.KEY_HOURS, null)
+                        .attribute("rpm", 799));
+
+        verifyDecode(decoder, text(
                 ">RCQ04211026183308-3148587-064241260003437F00000000000C413010800000099;"
                         + "PA=temp:2:23.5;PA=hum:2:65;PA=mag:1:0;#0001;ID=1234;*00<"),
                 position()
