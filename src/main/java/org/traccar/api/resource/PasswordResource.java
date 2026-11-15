@@ -63,6 +63,7 @@ public class PasswordResource extends BaseResource {
                 new Columns.All(), new Condition.Equals("LOWER(email)", email.toLowerCase(Locale.ROOT))));
         if (user != null) {
             var velocityContext = textTemplateFormatter.prepareContext(permissionsService.getServer(), user);
+            velocityContext.put("token", tokenManager.generateResetToken(user.getId()));
             var fullMessage = textTemplateFormatter.formatMessage(velocityContext, "passwordReset", false);
             mailManager.sendMessage(user, true, fullMessage.subject(), fullMessage.body()).get();
         }
@@ -76,7 +77,8 @@ public class PasswordResource extends BaseResource {
             @FormParam("token") String token, @FormParam("password") String password)
             throws StorageException, GeneralSecurityException, IOException {
 
-        long userId = tokenManager.verifyToken(token).getUserId();
+        TokenManager.TokenData tokenData = tokenManager.verifyResetToken(token);
+        long userId = tokenData.getUserId();
         User user = storage.getObject(User.class, new Request(
                 new Columns.All(), new Condition.Equals("id", userId)));
         if (user != null) {
@@ -84,6 +86,7 @@ public class PasswordResource extends BaseResource {
             storage.updateObject(user, new Request(
                     new Columns.Include("hashedPassword", "salt"),
                     new Condition.Equals("id", userId)));
+            tokenManager.revokeToken(tokenData);
             return Response.ok().build();
         }
         return Response.status(Response.Status.NOT_FOUND).build();

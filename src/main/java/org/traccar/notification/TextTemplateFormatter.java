@@ -23,39 +23,29 @@ import org.apache.velocity.app.VelocityEngine;
 import org.apache.velocity.tools.generic.DateTool;
 import org.apache.velocity.tools.generic.EscapeTool;
 import org.apache.velocity.tools.generic.NumberTool;
-import org.slf4j.Logger;
-import org.slf4j.LoggerFactory;
-import org.traccar.api.signature.TokenManager;
 import org.traccar.config.Config;
 import org.traccar.config.Keys;
 import org.traccar.database.LocaleManager;
 import org.traccar.helper.model.UserUtil;
 import org.traccar.model.Server;
 import org.traccar.model.User;
-import org.traccar.storage.StorageException;
 
-import java.io.IOException;
 import java.io.StringWriter;
 import java.nio.charset.StandardCharsets;
 import java.nio.file.Path;
-import java.security.GeneralSecurityException;
 import java.util.Locale;
 
 @Singleton
 public class TextTemplateFormatter {
 
-    private static final Logger LOGGER = LoggerFactory.getLogger(TextTemplateFormatter.class);
-
     private final VelocityEngine velocityEngine;
-    private final TokenManager tokenManager;
     private final LocaleManager localeManager;
     private final String templatesRoot;
 
     @Inject
     public TextTemplateFormatter(
-            VelocityEngine velocityEngine, TokenManager tokenManager, LocaleManager localeManager, Config config) {
+            VelocityEngine velocityEngine, LocaleManager localeManager, Config config) {
         this.velocityEngine = velocityEngine;
-        this.tokenManager = tokenManager;
         this.localeManager = localeManager;
         templatesRoot = config.getString(Keys.TEMPLATES_ROOT);
     }
@@ -67,11 +57,6 @@ public class TextTemplateFormatter {
         if (user != null) {
             velocityContext.put("user", user);
             velocityContext.put("timezone", UserUtil.getTimezone(server, user));
-            try {
-                velocityContext.put("token", tokenManager.generateToken(user.getId()));
-            } catch (IOException | GeneralSecurityException | StorageException e) {
-                LOGGER.warn("Token generation failed", e);
-            }
         }
 
         velocityContext.put("webUrl", velocityEngine.getProperty("web.url"));
