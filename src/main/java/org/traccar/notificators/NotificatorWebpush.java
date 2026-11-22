@@ -25,6 +25,7 @@ import org.traccar.model.Device;
 import org.traccar.model.Event;
 import org.traccar.model.Position;
 import org.traccar.model.User;
+import org.traccar.notification.MessageException;
 import org.traccar.notification.NotificationFormatter;
 import org.traccar.notification.NotificationMessage;
 import org.traccar.session.cache.CacheManager;
@@ -55,27 +56,37 @@ public class NotificatorWebpush extends Notificator {
         super(notificationFormatter);
         this.client = client;
         this.cacheManager = cacheManager;
-        url = config.getString("notificator.webpush.url");
-        secret = config.getString("notificator.webpush.secret");
+        url = trimmed(config.getString("notificator.webpush.url"));
+        secret = trimmed(config.getString("notificator.webpush.secret"));
+    }
+
+    private static String trimmed(String value) {
+        return value == null || value.isBlank() ? null : value.trim();
     }
 
     @Override
     public CompletableFuture<Void> sendAsync(
             User user, NotificationMessage message, Event event, Position position) {
         if (url == null || secret == null) {
-            return CompletableFuture.failedFuture(new IllegalStateException(
+            return CompletableFuture.failedFuture(new MessageException(
                     "notificator.webpush.url and notificator.webpush.secret are required"));
         }
-        Device device = cacheManager.getObject(Device.class, event.getDeviceId());
 
         Map<String, Object> alert = new HashMap<>();
         alert.put("userId", user.getId());
-        alert.put("eventId", event.getId());
-        alert.put("eventType", event.getType());
-        alert.put("eventTime", event.getEventTime().getTime());
-        alert.put("deviceId", event.getDeviceId());
-        alert.put("deviceName", device != null ? device.getName() : null);
-        alert.put("alarm", event.getString(Position.KEY_ALARM));
+        // No event for an announcement (/api/notifications/send/webpush): rastreo-api then sends
+        // the text alone, linking to the alerts list
+        if (event != null) {
+            Device device = cacheManager.getObject(Device.class, event.getDeviceId());
+            alert.put("eventId", event.getId());
+            alert.put("eventType", event.getType());
+            if (event.getEventTime() != null) {
+                alert.put("eventTime", event.getEventTime().getTime());
+            }
+            alert.put("deviceId", event.getDeviceId());
+            alert.put("deviceName", device != null ? device.getName() : null);
+            alert.put("alarm", event.getString(Position.KEY_ALARM));
+        }
         alert.put("subject", message.subject());
         alert.put("digest", message.digest());
         if (position != null) {
@@ -86,7 +97,11 @@ public class NotificatorWebpush extends Notificator {
         var request = client.target(url).request().header("X-Alerts-Secret", secret);
         return WebHelper.post(request, Entity.json(alert), response -> {
             if (response.getStatus() / 100 != 2) {
-                throw new IllegalStateException("rastreo-api answered " + response.getStatus());
+                String body = response.readEntity(String.class);
+                if (body != null && body.length() > 300) {
+                    body = body.substring(0, 300);
+                }
+                throw new MessageException("rastreo-api answered " + response.getStatus() + ": " + body);
             }
         });
     }
