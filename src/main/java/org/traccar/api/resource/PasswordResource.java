@@ -77,16 +77,20 @@ public class PasswordResource extends BaseResource {
             @FormParam("token") String token, @FormParam("password") String password)
             throws StorageException, GeneralSecurityException, IOException {
 
+        if (password == null || password.isBlank()) {
+            return Response.status(Response.Status.BAD_REQUEST).build();
+        }
         TokenManager.TokenData tokenData = tokenManager.verifyResetToken(token);
         long userId = tokenData.getUserId();
         User user = storage.getObject(User.class, new Request(
                 new Columns.All(), new Condition.Equals("id", userId)));
         if (user != null) {
+            // revoke first: a second request with the same token fails on the revoked id
+            tokenManager.revokeToken(tokenData);
             user.setPassword(password);
             storage.updateObject(user, new Request(
                     new Columns.Include("hashedPassword", "salt"),
                     new Condition.Equals("id", userId)));
-            tokenManager.revokeToken(tokenData);
             return Response.ok().build();
         }
         return Response.status(Response.Status.NOT_FOUND).build();
