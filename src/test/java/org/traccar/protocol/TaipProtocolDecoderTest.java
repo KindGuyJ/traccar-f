@@ -196,6 +196,10 @@ public class TaipProtocolDecoderTest extends ProtocolTest {
                 ">RCP00291224153045-2778467-0642565804518081011270003A98013041200011015;#0100;ID=974862;*5E<"),
                 position().attribute(Position.KEY_POWER, 12.7));
 
+        verifyDecode(decoder, text(
+                ">RCW00291224153045-2778467-06425658180045112000130411150000240000081;ID=974862;*5E<"),
+                position().speed(UnitsConverter.knotsFromKph(45)));
+
     }
 
 }

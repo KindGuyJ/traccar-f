@@ -151,6 +151,33 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
             .any()
             .compile();
 
+    private static final Pattern PATTERN_RINHO_CW = new PatternBuilder()
+            .text("RCW")
+            .number("(xx)")                      // event
+            .groupBegin()
+            .text("000000000000")                // no fix
+            .number("[-+]d{7}[-+]d{8}d{6}")
+            .or()
+            .number("(dd)(dd)(dd)")              // date (ddmmyy)
+            .number("(dd)(dd)(dd)")              // time (hhmmss)
+            .number("([-+]dd)(d{5})")            // latitude
+            .number("([-+]ddd)(d{5})")           // longitude
+            .number("(ddd)")                     // course
+            .number("(ddd)")                     // speed (km/h)
+            .groupEnd()
+            .number("([01])")                    // gps power
+            .number("(dd)")                      // satellites
+            .number("dddd")                      // data age
+            .number("(d)")                       // fix mode
+            .number("(ddd)")                     // pdop
+            .number("[01]")                      // modem power
+            .number("d")                         // gsm status
+            .number("(dd)")                      // rssi
+            .number("(d{10})")                   // odometer
+            .number("(xx)")                      // input
+            .any()
+            .compile();
+
     private Date getTime(long week, long day, long seconds) {
         DateBuilder dateBuilder = new DateBuilder()
                 .setDate(1980, 1, 6)
@@ -213,6 +240,11 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
         Parser rinhoParser = new Parser(PATTERN_RINHO, sentence);
         if (rinhoParser.matches()) {
             return decodeRinho(channel, remoteAddress, sentence, rinhoParser);
+        }
+
+        Parser rinhoCompactParser = new Parser(PATTERN_RINHO_CW, sentence);
+        if (rinhoCompactParser.matches()) {
+            return decodeRinhoCompact(channel, remoteAddress, sentence, rinhoCompactParser);
         }
 
         Parser parser = new Parser(PATTERN, sentence);
@@ -431,6 +463,41 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
         if (parser.hasNext()) {
             position.set(Position.KEY_DRIVER_UNIQUE_ID, parser.next());
         }
+
+        Position result = decodeAttributes(channel, remoteAddress, position, sentence);
+        if (result != null && !located) {
+            getLastLocation(result, null);
+        }
+        return result;
+    }
+
+    private Position decodeRinhoCompact(
+            Channel channel, SocketAddress remoteAddress, String sentence, Parser parser) {
+
+        Position position = new Position(getProtocolName());
+
+        position.set(Position.KEY_EVENT, parser.nextHexInt());
+
+        boolean located = parser.hasNext(12);
+        if (located) {
+            position.setTime(parser.nextDateTime(Parser.DateTimeFormat.DMY_HMS));
+            position.setLatitude(parser.nextCoordinate(Parser.CoordinateFormat.DEG_DEG));
+            position.setLongitude(parser.nextCoordinate(Parser.CoordinateFormat.DEG_DEG));
+            position.setCourse(parser.nextInt());
+            position.setSpeed(convertSpeed(parser.nextInt(), "kmh"));
+        }
+
+        boolean gpsPower = parser.nextInt() == 1;
+        position.set(Position.KEY_SATELLITES, parser.nextInt());
+        int fixMode = parser.nextInt();
+        position.setValid(located && gpsPower && fixMode >= 2);
+        position.set(Position.KEY_PDOP, parser.nextInt());
+        position.set(Position.KEY_RSSI, parser.nextInt());
+        position.set(Position.KEY_ODOMETER, parser.nextLong());
+
+        int input = parser.nextHexInt();
+        position.set(Position.KEY_IGNITION, BitUtil.check(input, 7));
+        position.set(Position.KEY_INPUT, input);
 
         Position result = decodeAttributes(channel, remoteAddress, position, sentence);
         if (result != null && !located) {
