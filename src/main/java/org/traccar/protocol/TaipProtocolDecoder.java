@@ -165,6 +165,14 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
             .any()
             .compile();
 
+    private static final Pattern PATTERN_CAN = Pattern.compile("[0-9A-F]+[=!].*");
+    private static final Pattern PATTERN_IBUTTON = Pattern.compile("\\p{XDigit}{16}");
+    private static final Pattern PATTERN_BATTERY = Pattern.compile("\\d{3}");
+    private static final Pattern PATTERN_HOURS = Pattern.compile("\\p{XDigit}{8}");
+    private static final Pattern PATTERN_TEMPERATURE = Pattern.compile("[-+]\\d{4}");
+    private static final Pattern PATTERN_INTEGER = Pattern.compile("[-+]?\\d+");
+    private static final Pattern PATTERN_DECIMAL = Pattern.compile("[-+]?\\d+\\.\\d+");
+
     private Date getTime(long week, long day, long seconds) {
         DateBuilder dateBuilder = new DateBuilder()
                 .setDate(1980, 1, 6)
@@ -244,7 +252,7 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
 
         int endIndex = sentence.indexOf('<');
         String[] values = (endIndex == -1 ? sentence : sentence.substring(0, endIndex)).split(";");
-        if (values.length < 2 || values[0].length() < 13) {
+        if (values.length < 2 || values[0].length() < 17) {
             return decodeResponse(channel, remoteAddress, sentence);
         }
 
@@ -253,7 +261,7 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
         Date faultTime;
         try {
             event = Integer.parseInt(header.substring(3, 5), 16);
-            faultTime = new DateBuilder()
+            faultTime = header.startsWith("000000", 5) ? null : new DateBuilder()
                     .setDate(
                             Integer.parseInt(header.substring(9, 11)),
                             Integer.parseInt(header.substring(7, 9)),
@@ -268,7 +276,6 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
         }
 
         Position position = new Position(getProtocolName());
-        position.setTime(faultTime);
         position.set(Position.KEY_EVENT, event);
 
         List<String> faults = new ArrayList<>();
@@ -586,133 +593,126 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
         String type = parser.next();
         position.set(Position.KEY_EVENT, parser.nextHexInt());
 
-        int day = parser.nextInt();
-        int month = parser.nextInt();
-        int year = parser.nextInt();
-        DateBuilder dateBuilder = new DateBuilder()
-                .setDate(year, month, day)
-                .setTime(parser.nextInt(), parser.nextInt(), parser.nextInt());
-
-        double latitude = parser.nextCoordinate(Parser.CoordinateFormat.DEG_DEG);
-        double longitude = parser.nextCoordinate(Parser.CoordinateFormat.DEG_DEG);
-
-        position.setSpeed(UnitsConverter.knotsFromKph(parser.nextInt()));
-        position.setCourse(parser.nextInt());
+        boolean located = decodeRinhoLocation(position, parser, false);
 
         int input = parser.nextHexInt();
         position.set(Position.KEY_IGNITION, BitUtil.check(input, 7));
         position.set(Position.KEY_INPUT, input);
         position.set(Position.KEY_OUTPUT, parser.nextHexInt());
         position.set(Position.KEY_POWER, parser.nextInt() / 10.0);
-        position.set(Position.KEY_ODOMETER, parser.nextLong(16, 0));
+        position.set(Position.KEY_ODOMETER, parser.nextHexLong());
 
         boolean gpsPower = parser.nextInt() == 1;
         int fixMode = parser.nextInt();
+        position.setValid(located && gpsPower && fixMode >= 2);
         position.set(Position.KEY_PDOP, parser.nextInt());
         position.set(Position.KEY_SATELLITES, parser.nextInt());
         position.set("dataAge", parser.nextHexInt());
         position.set(Position.KEY_RSSI, parser.nextInt());
 
-        decodeRinhoTail(position, type, parser.next());
+        decodeExtension(position, type, parser.next());
 
-        // reports without fix carry zero date and coordinates
-        boolean located = day != 0;
-        if (located) {
-            position.setTime(dateBuilder.getDate());
-            position.setLatitude(latitude);
-            position.setLongitude(longitude);
-            position.setValid(gpsPower && fixMode >= 2);
-        } else {
-            position.setTime(new Date());
-        }
-
-        List<String> attributes = new ArrayList<>();
-        String[] segments = splitAttributes(sentence);
-        if (segments != null) {
-            for (String segment : segments) {
-                if (segment.startsWith("PA=")) {
-                    decodeParameters(position, segment.substring(3));
-                } else if ((type.equals("EQ") || type.equals("ER"))
-                        && segment.matches("[0-9A-F]+[=!].*")) {
-                    decodeCan(position, type, segment);
-                } else if ((type.equals("CT") || type.equals("CU"))
-                        && segment.matches("[0-9A-F]{16}")) {
-                    position.set(Position.KEY_DRIVER_UNIQUE_ID, segment);
-                } else {
-                    attributes.add(segment);
-                }
+        String[] attributes = splitAttributes(sentence);
+        if (attributes != null && attributes.length > 1) {
+            String data = attributes[1];
+            if ((type.equals("EQ") || type.equals("ER")) && PATTERN_CAN.matcher(data).matches()) {
+                decodeCan(position, type.equals("ER"), data);
+                attributes[1] = "";
+            } else if ((type.equals("CT") || type.equals("CU")) && PATTERN_IBUTTON.matcher(data).matches()) {
+                position.set(Position.KEY_DRIVER_UNIQUE_ID, data);
+                attributes[1] = "";
             }
         }
+        decodeParameterSegments(position, attributes);
 
-        Position result = decodeAttributes(channel, remoteAddress, position, attributes.toArray(new String[0]));
+        Position result = decodeAttributes(channel, remoteAddress, position, attributes);
         if (result != null && !located) {
             getLastLocation(result, null);
         }
         return result;
     }
 
-    private void decodeRinhoTail(Position position, String type, String tail) {
-        if (tail == null) {
-            return;
+    private boolean decodeRinhoLocation(Position position, Parser parser, boolean courseFirst) {
+        int day = parser.nextInt();
+        if (day == 0) {
+            parser.skip(11);
+            return false;
         }
+        position.setTime(new DateBuilder()
+                .setDateReverse(day, parser.nextInt(), parser.nextInt())
+                .setTime(parser.nextInt(), parser.nextInt(), parser.nextInt())
+                .getDate());
+        position.setLatitude(parser.nextCoordinate(Parser.CoordinateFormat.DEG_DEG));
+        position.setLongitude(parser.nextCoordinate(Parser.CoordinateFormat.DEG_DEG));
+        if (courseFirst) {
+            position.setCourse(parser.nextInt());
+            position.setSpeed(convertSpeed(parser.nextInt(), "kmh"));
+        } else {
+            position.setSpeed(convertSpeed(parser.nextInt(), "kmh"));
+            position.setCourse(parser.nextInt());
+        }
+        return true;
+    }
+
+    private void decodeExtension(Position position, String type, String extension) {
         int index = 0;
         switch (type) {
             case "CU" -> {
-                if (tail.length() > index) {
-                    position.set("driverSession", tail.charAt(index) == '1');
+                if (extension.startsWith("0") || extension.startsWith("1")) {
+                    position.set("driverSession", extension.charAt(0) == '1');
                 }
             }
-            case "CR" -> index = decodeTemperature(position, 1, tail, index);
+            case "CR" -> decodeTemperature(position, 1, extension, index);
             case "CV" -> {
-                index = decodeTemperature(position, 1, tail, index);
-                decodeTemperature(position, 2, tail, index);
+                index = decodeTemperature(position, 1, extension, index);
+                decodeTemperature(position, 2, extension, index);
             }
-            case "BQ" -> decodeBattery(position, tail, index);
+            case "BQ" -> decodeBattery(position, extension, index);
             case "BR" -> {
-                index = decodeBattery(position, tail, index);
-                decodeTemperature(position, 1, tail, index);
+                index = decodeBattery(position, extension, index);
+                decodeTemperature(position, 1, extension, index);
             }
             case "BV" -> {
-                index = decodeBattery(position, tail, index);
-                index = decodeTemperature(position, 1, tail, index);
-                decodeTemperature(position, 2, tail, index);
+                index = decodeBattery(position, extension, index);
+                index = decodeTemperature(position, 1, extension, index);
+                decodeTemperature(position, 2, extension, index);
             }
             case "HQ" -> {
-                index = decodeBattery(position, tail, index);
-                decodeHours(position, tail, index);
+                index = decodeBattery(position, extension, index);
+                decodeHours(position, extension, index);
             }
             case "HR" -> {
-                index = decodeBattery(position, tail, index);
-                index = decodeHours(position, tail, index);
-                decodeTemperature(position, 1, tail, index);
+                index = decodeBattery(position, extension, index);
+                index = decodeHours(position, extension, index);
+                decodeTemperature(position, 1, extension, index);
             }
             case "HV" -> {
-                index = decodeBattery(position, tail, index);
-                index = decodeHours(position, tail, index);
-                index = decodeTemperature(position, 1, tail, index);
-                decodeTemperature(position, 2, tail, index);
+                index = decodeBattery(position, extension, index);
+                index = decodeHours(position, extension, index);
+                index = decodeTemperature(position, 1, extension, index);
+                decodeTemperature(position, 2, extension, index);
             }
             default -> {
             }
         }
     }
 
-    private int decodeBattery(Position position, String tail, int index) {
-        if (tail.length() >= index + 3) {
-            String value = tail.substring(index, index + 3);
-            if (value.matches("\\d{3}")) {
+    private int decodeBattery(Position position, String extension, int index) {
+        if (extension.length() >= index + 3) {
+            String value = extension.substring(index, index + 3);
+            if (PATTERN_BATTERY.matcher(value).matches()) {
                 position.set(Position.KEY_BATTERY, Integer.parseInt(value) / 100.0);
             }
         }
         return index + 3;
     }
 
-    private int decodeHours(Position position, String tail, int index) {
-        if (tail.length() >= index + 8) {
-            String value = tail.substring(index, index + 8);
-            if (value.matches("[0-9A-Fa-f]{8}")) {
+    private int decodeHours(Position position, String extension, int index) {
+        if (extension.length() >= index + 8) {
+            String value = extension.substring(index, index + 8);
+            if (PATTERN_HOURS.matcher(value).matches()) {
                 long seconds = Long.parseLong(value, 16);
-                if (seconds > 0) { // 0 means the device hourmeter is unused
+                if (seconds > 0) {
                     position.set(Position.KEY_HOURS, seconds * 1000);
                 }
             }
@@ -720,16 +720,12 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
         return index + 8;
     }
 
-    private int decodeTemperature(Position position, int number, String tail, int index) {
-        if (tail.length() >= index + 7) {
-            String value = tail.substring(index, index + 5);
-            String age = tail.substring(index + 5, index + 7);
-            if (value.matches("[-+]\\d{4}") && age.matches("[0-9A-Fa-f]{2}") && !age.equalsIgnoreCase("FF")) {
-                double temperature = Integer.parseInt(value.substring(1)) / 100.0;
-                if (value.charAt(0) == '-') {
-                    temperature = -temperature;
-                }
-                position.set(Position.PREFIX_TEMP + number, temperature);
+    private int decodeTemperature(Position position, int number, String extension, int index) {
+        if (extension.length() >= index + 7) {
+            String value = extension.substring(index, index + 5);
+            String age = extension.substring(index + 5, index + 7);
+            if (PATTERN_TEMPERATURE.matcher(value).matches() && !age.equalsIgnoreCase("FF")) {
+                position.set(Position.PREFIX_TEMP + number, Integer.parseInt(value) / 100.0);
             }
         }
         return index + 7;
@@ -742,23 +738,13 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
 
         position.set(Position.KEY_EVENT, parser.nextHexInt());
 
-        int day = parser.nextInt();
-        int month = parser.nextInt();
-        int year = parser.nextInt();
-        DateBuilder dateBuilder = new DateBuilder()
-                .setDate(year, month, day)
-                .setTime(parser.nextInt(), parser.nextInt(), parser.nextInt());
-
-        double latitude = parser.nextCoordinate(Parser.CoordinateFormat.DEG_DEG);
-        double longitude = parser.nextCoordinate(Parser.CoordinateFormat.DEG_DEG);
-
-        position.setCourse(parser.nextInt());
-        position.setSpeed(UnitsConverter.knotsFromKph(parser.nextInt()));
+        boolean located = decodeRinhoLocation(position, parser, true);
 
         boolean gpsPower = parser.nextInt() == 1;
         position.set(Position.KEY_SATELLITES, parser.nextInt());
         position.set("dataAge", parser.nextInt());
         int fixMode = parser.nextInt();
+        position.setValid(located && gpsPower && fixMode >= 2);
         position.set(Position.KEY_PDOP, parser.nextInt());
         position.set(Position.KEY_RSSI, parser.nextInt());
         position.set(Position.KEY_ODOMETER, parser.nextLong());
@@ -767,114 +753,106 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
         position.set(Position.KEY_IGNITION, BitUtil.check(input, 7));
         position.set(Position.KEY_INPUT, input);
 
-        // reports without fix carry zero date and coordinates
-        boolean located = day != 0;
-        if (located) {
-            position.setTime(dateBuilder.getDate());
-            position.setLatitude(latitude);
-            position.setLongitude(longitude);
-            position.setValid(gpsPower && fixMode >= 2);
-        } else {
-            position.setTime(new Date());
-        }
+        String[] attributes = splitAttributes(sentence);
+        decodeParameterSegments(position, attributes);
 
-        List<String> attributes = new ArrayList<>();
-        String[] segments = splitAttributes(sentence);
-        if (segments != null) {
-            for (String segment : segments) {
-                if (segment.startsWith("PA=")) {
-                    decodeParameters(position, segment.substring(3));
-                } else {
-                    attributes.add(segment);
-                }
-            }
-        }
-
-        Position result = decodeAttributes(channel, remoteAddress, position, attributes.toArray(new String[0]));
+        Position result = decodeAttributes(channel, remoteAddress, position, attributes);
         if (result != null && !located) {
             getLastLocation(result, null);
         }
         return result;
     }
 
-    private void decodeCan(Position position, String type, String segment) {
+    private void decodeCan(Position position, boolean j1939, String segment) {
         for (String pair : segment.split(",")) {
             int index = pair.indexOf('=');
             if (index <= 0 || index == pair.length() - 1) {
-                continue; // "CODE!error" or empty value means the ECU did not provide it
+                continue;
             }
             String code = pair.substring(0, index);
             String value = pair.substring(index + 1);
-            if (type.equals("ER")) {
-                switch (code) {
-                    case "2010" -> position.set(Position.KEY_RPM, (int) Double.parseDouble(value));
-                    case "5000" -> position.set(Position.KEY_THROTTLE, Double.parseDouble(value));
-                    case "1030" -> position.set(Position.KEY_FUEL_USED, Double.parseDouble(value));
-                    case "4201" -> position.set(Position.KEY_FUEL_LEVEL, Double.parseDouble(value));
-                    case "1020" -> position.set(Position.KEY_OBD_ODOMETER, (long) (Double.parseDouble(value) * 1000));
-                    case "1010" -> position.set(Position.KEY_OBD_SPEED, Double.parseDouble(value));
-                    case "2012" -> position.set(Position.KEY_COOLANT_TEMP, Double.parseDouble(value));
-                    case "2013" -> position.set("oilPressure", Double.parseDouble(value));
-                    case "2020" -> position.set(Position.KEY_HOURS, (long) (Double.parseDouble(value) * 3600000));
-                    case "3010" -> position.set("tripFuel", Double.parseDouble(value));
-                    default -> position.set("can" + code, value);
+            try {
+                if (j1939) {
+                    switch (code) {
+                        case "2010" -> position.set(Position.KEY_RPM, (int) Double.parseDouble(value));
+                        case "5000" -> position.set(Position.KEY_THROTTLE, Double.parseDouble(value));
+                        case "1030" -> position.set(Position.KEY_FUEL_USED, Double.parseDouble(value));
+                        case "4201" -> position.set(Position.KEY_FUEL_LEVEL, Double.parseDouble(value));
+                        case "1020" -> position.set(
+                                Position.KEY_OBD_ODOMETER, (long) (Double.parseDouble(value) * 1000));
+                        case "1010" -> position.set(Position.KEY_OBD_SPEED, Double.parseDouble(value));
+                        case "2012" -> position.set(Position.KEY_COOLANT_TEMP, Double.parseDouble(value));
+                        case "2013" -> position.set("oilPressure", Double.parseDouble(value));
+                        case "2020" -> position.set(
+                                Position.KEY_HOURS, UnitsConverter.msFromHours(Double.parseDouble(value)));
+                        case "3010" -> position.set("tripFuel", Double.parseDouble(value));
+                        default -> position.set("can" + code, value);
+                    }
+                } else {
+                    switch (code) {
+                        case "1" -> position.set(Position.KEY_VIN, value);
+                        case "2" -> position.set(Position.KEY_RPM, Integer.parseInt(value));
+                        case "3" -> position.set(Position.KEY_OBD_SPEED, Integer.parseInt(value));
+                        case "B" -> position.set(Position.KEY_OBD_ODOMETER, Long.parseLong(value) * 1000);
+                        case "14" -> position.set(Position.KEY_FUEL_USED, Integer.parseInt(value));
+                        case "15" -> position.set(Position.KEY_FUEL_LEVEL, Integer.parseInt(value));
+                        case "2A" -> position.set(Position.KEY_COOLANT_TEMP, Integer.parseInt(value));
+                        case "2C" -> position.set("oilPressure", Integer.parseInt(value));
+                        default -> position.set("can" + code, value);
+                    }
                 }
-            } else {
-                switch (code) {
-                    case "1" -> position.set(Position.KEY_VIN, value);
-                    case "2" -> position.set(Position.KEY_RPM, Integer.parseInt(value));
-                    case "3" -> position.set(Position.KEY_OBD_SPEED, Integer.parseInt(value));
-                    case "B" -> position.set(Position.KEY_OBD_ODOMETER, Long.parseLong(value) * 1000);
-                    case "14" -> position.set(Position.KEY_FUEL_USED, Integer.parseInt(value));
-                    case "15" -> position.set(Position.KEY_FUEL_LEVEL, Integer.parseInt(value));
-                    case "2A" -> position.set(Position.KEY_COOLANT_TEMP, Integer.parseInt(value));
-                    case "2C" -> position.set("oilPressure", Integer.parseInt(value));
-                    default -> position.set("can" + code, value);
+            } catch (NumberFormatException e) {
+                position.set("can" + code, value);
+            }
+        }
+    }
+
+    private void decodeParameterSegments(Position position, String[] attributes) {
+        if (attributes != null) {
+            for (int i = 0; i < attributes.length; i++) {
+                if (attributes[i].startsWith("PA=")) {
+                    decodeParameters(position, attributes[i].substring(3));
+                    attributes[i] = "";
                 }
             }
         }
     }
 
+    // ;PA= list of a user template (SUC): name:value or name:type:value, type 1 integer, 2 decimal, 3 text
     private void decodeParameters(Position position, String value) {
         for (String pair : value.split(",")) {
-            String[] parts = pair.split(":");
-            String name;
+            int separator = pair.indexOf(':');
+            if (separator <= 0 || separator == pair.length() - 1) {
+                continue;
+            }
+            String name = pair.substring(0, separator);
+            String raw = pair.substring(separator + 1);
             String type = null;
-            String raw;
-            if (parts.length == 2) {
-                name = parts[0];
-                raw = parts[1];
-            } else if (parts.length == 3) {
-                name = parts[0];
-                type = parts[1];
-                raw = parts[2];
-            } else {
-                continue;
+            if (raw.length() > 2 && raw.charAt(1) == ':' && "123".indexOf(raw.charAt(0)) >= 0) {
+                type = raw.substring(0, 1);
+                raw = raw.substring(2);
             }
-            if (name.isEmpty() || raw.isEmpty()) {
-                continue;
+            if (type == null) {
+                if (PATTERN_INTEGER.matcher(raw).matches()) {
+                    type = "1";
+                } else if (PATTERN_DECIMAL.matcher(raw).matches()) {
+                    type = "2";
+                }
             }
-            if ("1".equals(type)) {
-                try {
-                    position.set(name, Integer.parseInt(raw));
-                } catch (NumberFormatException e) {
-                    position.set(name, raw);
+            try {
+                switch (type == null ? "3" : type) {
+                    case "1" -> {
+                        long number = Long.parseLong(raw);
+                        if (number == (int) number) {
+                            position.set(name, (int) number);
+                        } else {
+                            position.set(name, number);
+                        }
+                    }
+                    case "2" -> position.set(name, Double.parseDouble(raw));
+                    default -> position.set(name, raw);
                 }
-            } else if ("2".equals(type)) {
-                try {
-                    position.set(name, Double.parseDouble(raw));
-                } catch (NumberFormatException e) {
-                    position.set(name, raw);
-                }
-            } else if (raw.matches("[-+]?\\d+")) {
-                try {
-                    position.set(name, Integer.parseInt(raw));
-                } catch (NumberFormatException e) {
-                    position.set(name, Long.parseLong(raw));
-                }
-            } else if (raw.matches("[-+]?\\d+\\.\\d+")) {
-                position.set(name, Double.parseDouble(raw));
-            } else {
+            } catch (NumberFormatException e) {
                 position.set(name, raw);
             }
         }

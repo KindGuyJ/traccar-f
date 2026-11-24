@@ -30,20 +30,23 @@ public class TaipProtocolDecoderTest extends ProtocolTest {
 
         verifyDecode(decoder, text(
                 ">RDF00020826143512;2;J:00:100:1:4;J:00:1761:1:12;#0100;ID=1234;*00<"),
-                position()
+                position(Checks.ATTRIBUTES)
+                        .outdated(true)
                         .attribute(Position.KEY_EVENT, 0)
                         .attribute("dtcCount", 2)
                         .attribute(Position.KEY_DTCS, "SPN100-FMI1 SPN1761-FMI1"));
 
         verifyDecode(decoder, text(
                 ">RDF00010926104233;1;O:00:P0301:0:0;#0101;ID=1234;*00<"),
-                position()
+                position(Checks.ATTRIBUTES)
+                        .outdated(true)
                         .attribute("dtcCount", 1)
                         .attribute(Position.KEY_DTCS, "P0301"));
 
         verifyDecode(decoder, text(
                 ">RDF0A020826150233;0;#0102;ID=1234;*00<"),
-                position()
+                position(Checks.ATTRIBUTES)
+                        .outdated(true)
                         .attribute(Position.KEY_EVENT, 10)
                         .attribute("dtcCount", 0));
 
@@ -100,7 +103,8 @@ public class TaipProtocolDecoderTest extends ProtocolTest {
 
         verifyDecode(decoder, text(
                 ">RER26000000000000-0000000-000000000000007F0012600000000115000FFFF1512;2010!3,5000!3,1030!3,4201!3,1020!3,1010!3,2012!3,2013!3,2020!3,3010!3;#1D97;ID=860693088279170;*5C<"),
-                position()
+                position(Checks.ATTRIBUTES)
+                        .outdated(true)
                         .attribute(Position.KEY_IGNITION, false)
                         .attribute(Position.KEY_EVENT, 0x26));
 
@@ -113,8 +117,25 @@ public class TaipProtocolDecoderTest extends ProtocolTest {
                         .attribute(Position.KEY_COOLANT_TEMP, 90));
 
         verifyDecode(decoder, text(
-                ">REQ00000000000000-2780656-064296830000117F00000010836F1130112FFFF1117;1=,2=,3=,B=,14=,15=,2A=,2C=;ID=2326;*01<"),
+                ">RER00090719144856-2778101-06425853000214FF00115000000AD13011000001511;2010=NA,5000=0.00,2020=13.00;#0009;ID=037222;*5A<"),
                 position()
+                        .attribute(Position.KEY_RPM, null)
+                        .attribute("can2010", "NA")
+                        .attribute(Position.KEY_THROTTLE, 0.0)
+                        .attribute(Position.KEY_HOURS, 46800000L));
+
+        verifyDecode(decoder, text(
+                ">RCQ04211026183308-3148587-064241260003437F00000000000C413010800000099;"
+                        + "PA=iccid:89543100001234567890,plate:3:00123,clock:12:30;#0001;ID=1234;*00<"),
+                position()
+                        .attribute("iccid", "89543100001234567890")
+                        .attribute("plate", "00123")
+                        .attribute("clock", "12:30"));
+
+        verifyDecode(decoder, text(
+                ">REQ00000000000000-2780656-064296830000117F00000010836F1130112FFFF1117;1=,2=,3=,B=,14=,15=,2A=,2C=;ID=2326;*01<"),
+                position(Checks.ATTRIBUTES)
+                        .outdated(true)
                         .attribute(Position.KEY_RPM, null));
 
         verifyDecode(decoder, text(
@@ -212,7 +233,7 @@ public class TaipProtocolDecoderTest extends ProtocolTest {
 
         verifyDecode(decoder, text(
                 ">RCQ09000000000000-3460365-058381460000007F0000000000000115000FFFF1099;#0000;ID=555224;*05<"),
-                position());
+                position(Checks.ATTRIBUTES).outdated(true));
 
         verifyDecode(decoder, text(
                 ">RBR00130217040848-3462200-05846708000175FF0022900003B3C13010800001118410+24061A;ID=555224;*07<"),
