@@ -112,6 +112,45 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
             .any()
             .compile();
 
+    private static final Pattern PATTERN_RINHO = new PatternBuilder()
+            .expression("R(?:CP|CQ|CR|CT|CU|CV|BQ|BR|BV|HQ|HR|HV)") // type
+            .number("(xx)")                      // event
+            .groupBegin()
+            .text("000000000000")                // no fix
+            .number("[-+]d{7}[-+]d{8}d{6}")
+            .or()
+            .number("(dd)(dd)(dd)")              // date (ddmmyy)
+            .number("(dd)(dd)(dd)")              // time (hhmmss)
+            .number("([-+]dd)(d{5})")            // latitude
+            .number("([-+]ddd)(d{5})")           // longitude
+            .number("(ddd)")                     // speed (km/h)
+            .number("(ddd)")                     // course
+            .groupEnd()
+            .number("(xx)")                      // input
+            .number("(xx)")                      // output
+            .number("(ddd)")                     // power
+            .number("(x{8})")                    // odometer
+            .number("([01])")                    // gps power
+            .number("(d)")                       // fix mode
+            .number("(dd)")                      // pdop
+            .number("(dd)")                      // satellites
+            .number("xxxx")                      // data age
+            .number("[01]")                      // modem power
+            .number("d")                         // gsm status
+            .number("(dd)")                      // rssi
+            .groupBegin()
+            .number("(ddd)")                     // battery
+            .number("(x{8})?")                   // hours
+            .groupEnd("?")
+            .groupBegin()
+            .number("([-+]dddd)(xx)")            // temperature 1
+            .number("(?:([-+]dddd)(xx))?")       // temperature 2
+            .groupEnd("?")
+            .number("[01]?")                     // driver session
+            .number("(?:;(x{16})(?=[;<]))?")     // driver id
+            .any()
+            .compile();
+
     private Date getTime(long week, long day, long seconds) {
         DateBuilder dateBuilder = new DateBuilder()
                 .setDate(1980, 1, 6)
@@ -169,6 +208,11 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
         int beginIndex = sentence.indexOf('>');
         if (beginIndex != -1) {
             sentence = sentence.substring(beginIndex + 1);
+        }
+
+        Parser rinhoParser = new Parser(PATTERN_RINHO, sentence);
+        if (rinhoParser.matches()) {
+            return decodeRinho(channel, remoteAddress, sentence, rinhoParser);
         }
 
         Parser parser = new Parser(PATTERN, sentence);
@@ -331,6 +375,73 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
             }
         }
 
+        Position result = decodeAttributes(channel, remoteAddress, position, sentence);
+        if (result != null && !located) {
+            getLastLocation(result, result.getDeviceTime());
+        }
+        return result;
+    }
+
+    private Position decodeRinho(Channel channel, SocketAddress remoteAddress, String sentence, Parser parser) {
+
+        Position position = new Position(getProtocolName());
+
+        position.set(Position.KEY_EVENT, parser.nextHexInt());
+
+        boolean located = parser.hasNext(12);
+        if (located) {
+            position.setTime(parser.nextDateTime(Parser.DateTimeFormat.DMY_HMS));
+            position.setLatitude(parser.nextCoordinate(Parser.CoordinateFormat.DEG_DEG));
+            position.setLongitude(parser.nextCoordinate(Parser.CoordinateFormat.DEG_DEG));
+            position.setSpeed(convertSpeed(parser.nextInt(), "kmh"));
+            position.setCourse(parser.nextInt());
+        }
+
+        int input = parser.nextHexInt();
+        position.set(Position.KEY_IGNITION, BitUtil.check(input, 7));
+        position.set(Position.KEY_INPUT, input);
+        position.set(Position.KEY_OUTPUT, parser.nextHexInt());
+        position.set(Position.KEY_POWER, parser.nextInt() / 10.0);
+        position.set(Position.KEY_ODOMETER, parser.nextHexLong());
+
+        boolean gpsPower = parser.nextInt() == 1;
+        int fixMode = parser.nextInt();
+        position.setValid(located && gpsPower && fixMode >= 2);
+        position.set(Position.KEY_PDOP, parser.nextInt());
+        position.set(Position.KEY_SATELLITES, parser.nextInt());
+        position.set(Position.KEY_RSSI, parser.nextInt());
+
+        if (parser.hasNext()) {
+            position.set(Position.KEY_BATTERY, parser.nextInt() / 100.0);
+        }
+        if (parser.hasNext()) {
+            long hours = parser.nextHexLong();
+            if (hours > 0) {
+                position.set(Position.KEY_HOURS, hours * 1000);
+            }
+        }
+        for (int i = 1; i <= 2; i++) {
+            if (parser.hasNext(2)) {
+                int temperature = parser.nextInt();
+                if (!parser.next().equalsIgnoreCase("FF")) {
+                    position.set(Position.PREFIX_TEMP + i, temperature / 100.0);
+                }
+            }
+        }
+        if (parser.hasNext()) {
+            position.set(Position.KEY_DRIVER_UNIQUE_ID, parser.next());
+        }
+
+        Position result = decodeAttributes(channel, remoteAddress, position, sentence);
+        if (result != null && !located) {
+            getLastLocation(result, null);
+        }
+        return result;
+    }
+
+    private Position decodeAttributes(
+            Channel channel, SocketAddress remoteAddress, Position position, String sentence) {
+
         String[] attributes = null;
         int beginAttributes = sentence.indexOf(';');
         if (beginAttributes != -1) {
@@ -340,16 +451,6 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
             }
             attributes = sentence.substring(beginAttributes, endIndex).split(";");
         }
-
-        Position result = decodeAttributes(channel, remoteAddress, position, attributes);
-        if (result != null && !located) {
-            getLastLocation(result, result.getDeviceTime());
-        }
-        return result;
-    }
-
-    private Position decodeAttributes(
-            Channel channel, SocketAddress remoteAddress, Position position, String[] attributes) {
 
         String uniqueId = null;
         DeviceSession deviceSession = null;

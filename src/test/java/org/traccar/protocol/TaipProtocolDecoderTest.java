@@ -62,7 +62,7 @@ public class TaipProtocolDecoderTest extends ProtocolTest {
 
         verifyDecode(decoder, text(
                 ">RCV12270218010247-3471349-058400030002057F001200020A1D013010600001509+0000FF+0000FF;#1DE2;ID=7196;*03<"),
-                position());
+                position().attribute(Position.PREFIX_TEMP + 1, null));
 
         verifyDecode(decoder, text(
                 ">RPV03874+3477708-0923453100029212;ID=0017;*71<"),
@@ -102,11 +102,11 @@ public class TaipProtocolDecoderTest extends ProtocolTest {
 
         verifyDecode(decoder, text(
                 ">RCQ09000000000000-3460365-058381460000007F0000000000000115000FFFF1099;#0000;ID=555224;*05<"),
-                position());
+                position(Checks.ATTRIBUTES).outdated(true));
 
         verifyDecode(decoder, text(
                 ">RBR00130217040848-3462200-05846708000175FF0022900003B3C13010800001118410+24061A;ID=555224;*07<"),
-                position());
+                position().attribute(Position.PREFIX_TEMP + 1, 24.06));
 
         verifyDecode(decoder, text(
                 ">REV451891352379+0307152+1016143700000012;SV=8;BL=4416;VO=8055;ID=356612026322000<"),
@@ -163,6 +163,38 @@ public class TaipProtocolDecoderTest extends ProtocolTest {
         verifyDecode(decoder, text(
                 ">RUV03150,NT003,190826131748-2353539-046680190000009FFDE0006,0,6,50000,500,0,0,50,51515,0,0,0,0,0,0,0,0,0,0,0,0;ID=FWHS;#1A2D;*6D<"),
                 position());
+
+        verifyDecode(decoder, text(
+                ">RCQ00211026183308-3148587-064241260003437F00000000000C413010800000099;#96BA;ID=123456789012345;*41<"),
+                position().attribute(Position.KEY_ODOMETER, 196L));
+
+        verifyDecode(decoder, text(
+                ">RCV00291224153045-2778467-0642565804518081011270003A98013041200011015+235005-052010;#0100;ID=974862;*5E<"),
+                position().attribute(Position.PREFIX_TEMP + 2, -5.2));
+
+        verifyDecode(decoder, text(
+                ">RHV00291224153045-2778467-0642565804518081011270003A980130412000110152100000E10C+23501E-05200A;#0100;ID=974862;*5E<"),
+                position().attribute(Position.KEY_HOURS, 57612000L));
+
+        verifyDecode(decoder, text(
+                ">RHQ00051126211440-2750504-061508110000397F00128001121F81300120000150841300000000;ID=123456789012345;*5A<"),
+                position().attribute(Position.KEY_HOURS, null));
+
+        verifyDecode(decoder, text(
+                ">RBQ00291224153045-2778467-0642565804518081011270003A98013041200011015420;#0100;ID=974862;*5E<"),
+                position().attribute(Position.KEY_BATTERY, 4.2));
+
+        verifyDecode(decoder, text(
+                ">RCT00120520143022-2778467-0642565800007799001240000000013020700011015;0100000012345678;#0100;ID=1234;*3A<"),
+                position().attribute(Position.KEY_DRIVER_UNIQUE_ID, "0100000012345678"));
+
+        verifyDecode(decoder, text(
+                ">RCU00291224153045-2778467-0642565804518081011270003A980130412000110151;01000012AB34CD56;#0100;ID=974862;*5E<"),
+                position().attribute(Position.KEY_DRIVER_UNIQUE_ID, "01000012AB34CD56"));
+
+        verifyDecode(decoder, text(
+                ">RCP00291224153045-2778467-0642565804518081011270003A98013041200011015;#0100;ID=974862;*5E<"),
+                position().attribute(Position.KEY_POWER, 12.7));
 
     }
 
