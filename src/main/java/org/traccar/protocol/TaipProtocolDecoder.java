@@ -25,6 +25,7 @@ import org.traccar.helper.DateBuilder;
 import org.traccar.helper.DateUtil;
 import org.traccar.helper.Parser;
 import org.traccar.helper.PatternBuilder;
+import org.traccar.helper.UnitsConverter;
 import org.traccar.model.Position;
 import org.traccar.session.DeviceSession;
 
@@ -113,7 +114,7 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
             .compile();
 
     private static final Pattern PATTERN_RINHO = new PatternBuilder()
-            .expression("R(?:CP|CQ|CR|CT|CU|CV|BQ|BR|BV|HQ|HR|HV)") // type
+            .expression("R(CP|CQ|CR|CT|CU|CV|BQ|BR|BV|HQ|HR|HV|EQ|ER)") // type
             .number("(xx)")                      // event
             .groupBegin()
             .text("000000000000")                // no fix
@@ -148,6 +149,7 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
             .groupEnd("?")
             .number("[01]?")                     // driver session
             .number("(?:;(x{16})(?=[;<]))?")     // driver id
+            .number("(?:;(x+[=!][^;<]*))?")      // can data
             .any()
             .compile();
 
@@ -418,6 +420,7 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
 
         Position position = new Position(getProtocolName());
 
+        String type = parser.next();
         position.set(Position.KEY_EVENT, parser.nextHexInt());
 
         boolean located = parser.hasNext(12);
@@ -462,6 +465,40 @@ public class TaipProtocolDecoder extends BaseProtocolDecoder {
         }
         if (parser.hasNext()) {
             position.set(Position.KEY_DRIVER_UNIQUE_ID, parser.next());
+        }
+        if (parser.hasNext() && type.startsWith("E")) {
+            String data = parser.next();
+            for (String pair : data.split(",")) {
+                String[] values = pair.split("=");
+                if (values.length < 2) {
+                    continue;
+                }
+                String value = values[1];
+                switch (type + values[0]) {
+                    case "EQ1" -> position.set(Position.KEY_VIN, value);
+                    case "EQ2" -> position.set(Position.KEY_RPM, Integer.parseInt(value));
+                    case "EQ3" -> position.set(Position.KEY_OBD_SPEED, Integer.parseInt(value));
+                    case "EQB" -> position.set(Position.KEY_OBD_ODOMETER, Long.parseLong(value) * 1000);
+                    case "EQ14" -> position.set(Position.KEY_FUEL_USED, Integer.parseInt(value));
+                    case "EQ15" -> position.set(Position.KEY_FUEL_LEVEL, Integer.parseInt(value));
+                    case "EQ2A" -> position.set(Position.KEY_COOLANT_TEMP, Integer.parseInt(value));
+                    case "EQ2C" -> position.set("oilPressure", Integer.parseInt(value));
+                    case "ER2010" -> position.set(Position.KEY_RPM, (int) Double.parseDouble(value));
+                    case "ER5000" -> position.set(Position.KEY_THROTTLE, Double.parseDouble(value));
+                    case "ER1030" -> position.set(Position.KEY_FUEL_USED, Double.parseDouble(value));
+                    case "ER4201" -> position.set(Position.KEY_FUEL_LEVEL, Double.parseDouble(value));
+                    case "ER1020" -> position.set(Position.KEY_OBD_ODOMETER, (long) (Double.parseDouble(value) * 1000));
+                    case "ER1010" -> position.set(Position.KEY_OBD_SPEED, Double.parseDouble(value));
+                    case "ER2012" -> position.set(Position.KEY_COOLANT_TEMP, Double.parseDouble(value));
+                    case "ER2013" -> position.set("oilPressure", Double.parseDouble(value));
+                    case "ER2020" -> position.set(
+                            Position.KEY_HOURS, UnitsConverter.msFromHours(Double.parseDouble(value)));
+                    case "ER3010" -> position.set("tripFuel", Double.parseDouble(value));
+                    default -> {
+                    }
+                }
+            }
+            sentence = sentence.replace(";" + data, "");
         }
 
         Position result = decodeAttributes(channel, remoteAddress, position, sentence);

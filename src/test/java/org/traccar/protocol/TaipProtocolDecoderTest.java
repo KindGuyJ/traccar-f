@@ -200,6 +200,26 @@ public class TaipProtocolDecoderTest extends ProtocolTest {
                 ">RCW00291224153045-2778467-06425658180045112000130411150000240000081;ID=974862;*5E<"),
                 position().speed(UnitsConverter.knotsFromKph(45)));
 
+        verifyDecode(decoder, text(
+                ">RER00241126154754-2722999-06119313012130FF001410B2C7C8713011200001521;2010=796.00,5000=18.00,1030!3,4201!3,1020=187607.00,1010=13.00,2012=60.00,2013!3,2020!3,3010=1.06;#3DE8;ID=123456789012345;*26<"),
+                position().attribute(Position.KEY_RPM, 796));
+
+        verifyDecode(decoder, text(
+                ">RER01171126184614-2839736-061723250000287F001270013FD9113001000001508;2010!3,5000!3,1030!3,4201!3,1020!3,1010!3,2012!3,2013!3,2020!3,3010!3;#00DB;ID=123456789012345;*2A<"),
+                position().attribute(Position.KEY_RPM, null));
+
+        verifyDecode(decoder, text(
+                ">RER00090719144856-2778101-06425853000214FF00115000000AD13011000001511;2010=1000.00,5000=0.00,1030=10000.00,4201=50.00,1020=20000.00,1010=60.00,2012=15.00,2013=100.00,2020=13.00,3010=0.13;#0009;ID=037222;*5A<"),
+                position().attribute(Position.KEY_HOURS, 46800000L));
+
+        verifyDecode(decoder, text(
+                ">REQ00210918170359-2778100-064258570001517F000000000049D13010900001516;1=1M8GDM9A_KP042788,2=2200,3=45,B=66010,14=30000,15=75,2A=90,2C=340;ID=037883;*01<"),
+                position().attribute(Position.KEY_VIN, "1M8GDM9A_KP042788"));
+
+        verifyDecode(decoder, text(
+                ">REQ00000000000000-2780656-064296830000117F00000010836F1130112FFFF1117;1=,2=,3=,B=,14=,15=,2A=,2C=;ID=2326;*01<"),
+                position(Checks.ATTRIBUTES).outdated(true));
+
     }
 
 }
